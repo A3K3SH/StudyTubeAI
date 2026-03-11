@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import OpenAI from 'openai';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 
@@ -136,15 +136,17 @@ The system processes educational videos and creates structured study materials t
   }
 });
 
-// Generate study notes using Google Gemini
+// Generate study notes using NVIDIA DeepSeek v3.2
 async function generateStudyNotes(context) {
-  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  const apiKey = process.env.NVIDIA_API_KEY;
   if (!apiKey) {
-    throw new Error('Google Gemini API key not configured');
+    throw new Error('NVIDIA API key not configured');
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const client = new OpenAI({
+    baseURL: 'https://integrate.api.nvidia.com/v1',
+    apiKey,
+  });
 
   const prompt = `You are an expert study notes generator. Create comprehensive study notes based on this content:
 
@@ -175,8 +177,15 @@ Provide the study notes in this JSON format ONLY (no other text):
 Return ONLY valid JSON.`;
 
   try {
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
+    const completion = await client.chat.completions.create({
+      model: 'deepseek-ai/deepseek-v3.2',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 1,
+      top_p: 0.95,
+      max_tokens: 8192,
+    });
+
+    const responseText = completion.choices[0].message.content;
 
     // Parse JSON from response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -186,7 +195,7 @@ Return ONLY valid JSON.`;
 
     return JSON.parse(jsonMatch[0]);
   } catch (error) {
-    throw new Error(`Gemini API error: ${error.message}`);
+    throw new Error(`NVIDIA API error: ${error.message}`);
   }
 }
 
