@@ -25,6 +25,9 @@ function parsePositiveInt(value, fallback) {
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
 }
 
+const freeTierDailyLimit = parsePositiveInt(process.env.FREE_TIER_DAILY_LIMIT, 1);
+const freeTierIdentityDailyLimit = parsePositiveInt(process.env.FREE_TIER_IDENTITY_DAILY_LIMIT, 1);
+
 const razorpayKeyId = process.env.RAZORPAY_KEY_ID || '';
 const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || '';
 const razorpayWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || '';
@@ -458,6 +461,43 @@ async function getAuthenticatedUidFromRequest(req) {
   return authenticatedUser?.uid || null;
 }
 
+function getDayStart(date = new Date()) {
+  const dayStart = new Date(date);
+  dayStart.setHours(0, 0, 0, 0);
+  return dayStart;
+}
+
+function getDayKey(date = new Date()) {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getClientIp(req) {
+  const forwardedFor = req.headers['x-forwarded-for'];
+
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+    return forwardedFor.split(',')[0].trim();
+  }
+
+  if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
+    return (forwardedFor[0] || '').trim();
+  }
+
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function getFreeTierIdentityHash(req) {
+  const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : 'unknown';
+  const ip = getClientIp(req);
+  return crypto.createHash('sha256').update(`${ip}|${userAgent}`).digest('hex');
+}
+
+function getFreeTierIdentityDocId(req, date = new Date()) {
+  return `${getDayKey(date)}:${getFreeTierIdentityHash(req)}`;
+}
+
 app.post('/api/payments/razorpay/order', async (req, res) => {
   try {
     if (!firebaseAdminReady || !db) {
@@ -638,9 +678,9 @@ app.post('/api/generate-notes', async (req, res) => {
       
       // Only apply limits to free tier users
       if (userTier === 'free') {
+        const now = new Date();
         const lastReset = userData.lastResetAt ? userData.lastResetAt.toDate() : null;
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const today = getDayStart(now);
         
         let notesGeneratedToday = 0;
         
@@ -651,16 +691,32 @@ app.post('/api/generate-notes', async (req, res) => {
           notesGeneratedToday = userData.notesGeneratedToday || 0;
         }
 
-        if (notesGeneratedToday >= 1) {
+        if (notesGeneratedToday >= freeTierDailyLimit) {
           return res.status(403).json({
-            error: 'Daily limit reached. Free users can generate 1 note per day. Upgrade to Pro for unlimited notes.',
+            error: `Daily limit reached. Free users can generate ${freeTierDailyLimit} note${freeTierDailyLimit === 1 ? '' : 's'} per day. Upgrade to Pro for unlimited notes.`,
             notesRemaining: 0,
-            limit: 1,
+            limit: freeTierDailyLimit,
             tier: 'free'
           });
         }
 
-        res.set('X-Notes-Remaining', (1 - notesGeneratedToday).toString());
+        // Anti-abuse guard: prevent bypassing free limits via multiple email accounts.
+        const freeTierIdentityRef = db.collection('daily_free_identity_limits').doc(getFreeTierIdentityDocId(req, now));
+        const freeTierIdentityDoc = await freeTierIdentityRef.get();
+        const freeTierIdentityData = freeTierIdentityDoc.exists ? freeTierIdentityDoc.data() : {};
+        const identityUsageCount = Number.parseInt(freeTierIdentityData.count ?? '0', 10) || 0;
+        const identityLastUid = typeof freeTierIdentityData.lastUid === 'string' ? freeTierIdentityData.lastUid : null;
+
+        if (identityUsageCount >= freeTierIdentityDailyLimit && identityLastUid !== effectiveUserId) {
+          return res.status(403).json({
+            error: 'Daily free limit reached for this device/network. Creating multiple accounts to bypass limits is not allowed. Upgrade to Pro for unlimited notes.',
+            notesRemaining: 0,
+            limit: freeTierIdentityDailyLimit,
+            tier: 'free',
+          });
+        }
+
+        res.set('X-Notes-Remaining', Math.max(freeTierDailyLimit - notesGeneratedToday, 0).toString());
         res.set('X-User-Tier', 'free');
       } else {
         res.set('X-Notes-Remaining', 'unlimited');
@@ -690,12 +746,13 @@ app.post('/api/generate-notes', async (req, res) => {
 
     // Increment user's daily notes count
     if (effectiveUserId) {
+      const now = new Date();
       const userRef = db.collection('users').doc(effectiveUserId);
       const userDoc = await userRef.get();
       const userData = userDoc.exists ? userDoc.data() : {};
+      const userTier = userData.tier || 'free';
       const lastReset = userData.lastResetAt ? userData.lastResetAt.toDate() : null;
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = getDayStart(now);
       
       let notesGeneratedToday = 0;
       
@@ -709,12 +766,29 @@ app.post('/api/generate-notes', async (req, res) => {
       await userRef.set(
         {
           notesGeneratedToday: notesGeneratedToday,
-          lastResetAt: new Date(),
+          lastResetAt: now,
           email: userData.email || null,
-          tier: userData.tier || 'free'
+          tier: userTier
         },
         { merge: true }
       );
+
+      if (userTier === 'free') {
+        const freeTierIdentityRef = db.collection('daily_free_identity_limits').doc(getFreeTierIdentityDocId(req, now));
+        const freeTierIdentityDoc = await freeTierIdentityRef.get();
+        const freeTierIdentityData = freeTierIdentityDoc.exists ? freeTierIdentityDoc.data() : {};
+        const currentIdentityCount = Number.parseInt(freeTierIdentityData.count ?? '0', 10) || 0;
+
+        await freeTierIdentityRef.set(
+          {
+            count: currentIdentityCount + 1,
+            lastUid: effectiveUserId,
+            updatedAt: now,
+            createdAt: freeTierIdentityData.createdAt || now,
+          },
+          { merge: true }
+        );
+      }
     }
 
     res.json({ notes });
