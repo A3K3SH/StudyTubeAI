@@ -9,11 +9,17 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
+    "@google/generative-ai": "^0.24.1",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
     "firebase-admin": "^12.0.0",
-    "openai": "^6.27.0"
+    "openai": "^6.27.0",
+    "razorpay": "^2.9.6",
+    "youtube-caption-extractor": "^1.9.1",
+    "youtube-transcript": "^1.2.1",
+    "yt-dlp-exec": "^1.0.2"
   },
   "engines": {
     "node": "18"

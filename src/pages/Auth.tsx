@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { auth } from "@/integrations/firebase";
 import { 
   createUserWithEmailAndPassword, 
@@ -23,15 +23,18 @@ const Auth = () => {
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const nextPath = searchParams.get("next");
+  const redirectPath = nextPath && nextPath.startsWith("/") ? nextPath : "/generate";
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
-        navigate("/generate");
+        navigate(redirectPath);
       }
     });
     return () => unsubscribe();
-  }, [navigate]);
+  }, [navigate, redirectPath]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

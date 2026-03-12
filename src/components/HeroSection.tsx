@@ -54,14 +54,6 @@ const HeroSection = () => {
               </Link>
             </motion.div>
 
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.6, delay: 0.3 }}
-              className="text-sm text-muted-foreground"
-            >
-              Free · No signup required · 30-sec results
-            </motion.p>
           </div>
 
           {/* Right - floating notes mockup */}

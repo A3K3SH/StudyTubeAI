@@ -59,6 +59,7 @@ const Navbar = () => {
     { label: "How It Works", action: () => scrollToSection("how-it-works") },
     { label: "Features", action: () => scrollToSection("features") },
     { label: "Pricing", action: () => { setMobileOpen(false); navigate("/pricing"); } },
+    { label: "Support", action: () => { setMobileOpen(false); navigate("/support"); } },
   ];
 
   return (

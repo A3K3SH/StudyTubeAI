@@ -1,22 +1,69 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
+import Razorpay from 'razorpay';
+import { YoutubeTranscript } from 'youtube-transcript';
+import ytdlp from 'yt-dlp-exec';
+import { createReadStream } from 'fs';
+import { rm } from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+function parsePositiveInt(value, fallback) {
+  const parsedValue = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
+}
+
+const razorpayKeyId = process.env.RAZORPAY_KEY_ID || '';
+const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || '';
+const razorpayWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+const ownerProEmails = new Set(
+  (process.env.OWNER_PRO_EMAILS || '')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean)
+);
+const defaultCurrency = process.env.RAZORPAY_CURRENCY || 'INR';
+const paidPlanConfig = {
+  pro: {
+    tier: 'pro',
+    label: 'Pro',
+    description: 'StudyTube AI Pro access',
+    amount: parsePositiveInt(process.env.RAZORPAY_PRO_AMOUNT, 29900),
+    currency: defaultCurrency,
+    durationDays: parsePositiveInt(process.env.RAZORPAY_PRO_DURATION_DAYS, 30),
+  },
+};
+
+const razorpayClient = razorpayKeyId && razorpayKeySecret
+  ? new Razorpay({
+      key_id: razorpayKeyId,
+      key_secret: razorpayKeySecret,
+    })
+  : null;
+
 // Initialize Firebase Admin (for free tier limit tracking)
 let db = null;
+let adminAuth = null;
+let firebaseAdminReady = false;
 try {
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     initializeApp({ credential: cert(serviceAccount) });
     db = getFirestore();
+    adminAuth = getAuth();
+    firebaseAdminReady = true;
   }
 } catch (error) {
   console.warn('Firebase Admin not configured. Note limits will not be enforced.');
@@ -24,6 +71,57 @@ try {
 
 // Middleware
 app.use(cors());
+
+app.post('/api/payments/razorpay/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    if (!firebaseAdminReady || !db) {
+      return res.status(503).json({
+        error: 'Plan enforcement is unavailable. Configure FIREBASE_SERVICE_ACCOUNT before processing Razorpay webhooks.',
+      });
+    }
+
+    if (!razorpayWebhookSecret) {
+      return res.status(503).json({
+        error: 'RAZORPAY_WEBHOOK_SECRET is not configured on the backend.',
+      });
+    }
+
+    const webhookSignature = req.headers['x-razorpay-signature'];
+    if (typeof webhookSignature !== 'string' || !webhookSignature.trim()) {
+      return res.status(400).json({ error: 'Missing Razorpay webhook signature.' });
+    }
+
+    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? '');
+    const expectedSignature = crypto
+      .createHmac('sha256', razorpayWebhookSecret)
+      .update(rawBody)
+      .digest('hex');
+
+    if (expectedSignature !== webhookSignature) {
+      return res.status(400).json({ error: 'Invalid Razorpay webhook signature.' });
+    }
+
+    const event = JSON.parse(rawBody.toString('utf8'));
+    const details = extractWebhookUpgradeDetails(event);
+
+    if (details) {
+      await activatePaidPlan({
+        uid: details.uid,
+        tier: details.tier,
+        email: details.email,
+        orderId: details.orderId,
+        paymentId: details.paymentId,
+        source: `webhook:${event.event}`,
+      });
+    }
+
+    return res.json({ received: true });
+  } catch (error) {
+    console.error('Razorpay webhook error:', error);
+    return res.status(500).json({ error: 'Failed to process Razorpay webhook.' });
+  }
+});
+
 app.use(express.json());
 
 // Health check endpoint
@@ -31,18 +129,509 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'StudyTube Backend is running' });
 });
 
+// Support contact endpoint
+app.post('/api/support/contact', async (req, res) => {
+  const { name, email, subject, message } = req.body || {};
+  if (!name || !email || !message) {
+    return res.status(400).json({ error: 'name, email, and message are required.' });
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ error: 'Invalid email address.' });
+  }
+
+  console.log(`\n📧 Support Contact`);
+  console.log(`  From  : ${name} <${email}>`);
+  console.log(`  Subject: ${subject || '(none)'}`);
+  console.log(`  Message: ${message}\n`);
+
+  // If Firestore is available, persist the ticket
+  if (db) {
+    try {
+      await db.collection('support_tickets').add({
+        name,
+        email,
+        subject: subject || '',
+        message,
+        createdAt: new Date().toISOString(),
+        status: 'open',
+      });
+    } catch (err) {
+      console.warn('Could not save support ticket to Firestore:', err.message);
+    }
+  }
+
+  return res.json({ success: true });
+});
+
+function extractYouTubeVideoId(url) {
+  try {
+    const parsedUrl = new URL(url);
+    const host = parsedUrl.hostname.replace('www.', '');
+
+    if (host === 'youtu.be') {
+      return parsedUrl.pathname.split('/').filter(Boolean)[0] || null;
+    }
+
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      if (parsedUrl.pathname === '/watch') {
+        return parsedUrl.searchParams.get('v');
+      }
+
+      const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
+      if (pathParts[0] === 'embed' || pathParts[0] === 'shorts') {
+        return pathParts[1] || null;
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function isValidYouTubeVideoId(videoId) {
+  return typeof videoId === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(videoId);
+}
+
+async function fetchYouTubeTranscript(videoId) {
+  const transcriptCandidates = [
+    () => YoutubeTranscript.fetchTranscript(videoId),
+    () => YoutubeTranscript.fetchTranscript(`https://www.youtube.com/watch?v=${videoId}`),
+    () => YoutubeTranscript.fetchTranscript(videoId, { lang: 'en' }),
+  ];
+
+  let lastError = null;
+
+  for (const candidate of transcriptCandidates) {
+    try {
+      const transcriptItems = await candidate();
+      if (Array.isArray(transcriptItems) && transcriptItems.length > 0) {
+        return transcriptItems
+          .map((item) => item.text)
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const transcriptError = (lastError && lastError.message) ? lastError.message : '';
+
+  if (transcriptError.includes('Impossible to retrieve Youtube video ID')) {
+    throw new Error('Invalid YouTube URL. Please use a full video URL.');
+  }
+  if (transcriptError.includes('Transcript is disabled on this video')) {
+    throw new Error('Transcript is disabled for this video. Try another video with captions enabled.');
+  }
+  if (transcriptError.includes('YouTube is receiving too many requests')) {
+    throw new Error('YouTube temporarily blocked transcript requests from this IP. Please try again later.');
+  }
+  if (transcriptError.includes('No transcripts are available')) {
+    throw new Error('No transcript available for this video');
+  }
+
+  throw new Error('Could not fetch transcript for this video. Try another video with captions.');
+}
+
+function downloadYouTubeAudio(videoId) {
+  const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const tempPath = path.join(os.tmpdir(), `studytube-${videoId}-${Date.now()}.webm`);
+
+  return ytdlp(sourceUrl, {
+    output: tempPath,
+    format: 'bestaudio[ext=webm]/bestaudio',
+    noPlaylist: true,
+    noWarnings: true,
+    quiet: true,
+  })
+    .then(() => tempPath)
+    .catch((error) => {
+      throw new Error(`Audio download failed: ${error.message || error}`);
+    });
+}
+
+async function transcribeAudioWithGroq(audioPath) {
+  const groqApiKey = process.env.GROQ_API_KEY;
+  if (!groqApiKey) {
+    throw new Error('GROQ_API_KEY is required for transcription fallback');
+  }
+
+  const client = new OpenAI({
+    baseURL: 'https://api.groq.com/openai/v1',
+    apiKey: groqApiKey,
+  });
+
+  const transcription = await client.audio.transcriptions.create({
+    file: createReadStream(audioPath),
+    model: process.env.GROQ_TRANSCRIPTION_MODEL || 'whisper-large-v3-turbo',
+    response_format: 'json',
+  });
+
+  const text = transcription?.text?.trim();
+  if (!text) {
+    throw new Error('Transcription fallback returned empty text');
+  }
+
+  return text;
+}
+
+async function fetchTranscriptWithFallback(videoId) {
+  try {
+    return await fetchYouTubeTranscript(videoId);
+  } catch (transcriptError) {
+    let audioPath = null;
+    try {
+      audioPath = await downloadYouTubeAudio(videoId);
+      return await transcribeAudioWithGroq(audioPath);
+    } catch (fallbackError) {
+      const transcriptMessage = transcriptError?.message || 'Transcript fetch failed';
+      const fallbackMessage = fallbackError?.message || 'Audio transcription fallback failed';
+      throw new Error(`Could not fetch transcript or transcribe audio. ${transcriptMessage}. ${fallbackMessage}`);
+    } finally {
+      if (audioPath) {
+        await rm(audioPath, { force: true }).catch(() => {});
+      }
+    }
+  }
+}
+
+function formatAiError(error) {
+  const message = error?.message || 'Failed to generate notes';
+
+  if (message.includes('API key expired') || message.includes('API_KEY_INVALID')) {
+    return {
+      status: 401,
+      error: 'The configured Google Gemini API key is expired or invalid. Add a new key and restart the backend.',
+    };
+  }
+
+  if (message.includes('Invalid auth credentials') || message.includes('Unauthorized') || message.includes('401')) {
+    return {
+      status: 401,
+      error: 'The configured AI API key is invalid. Add a valid key and restart the backend.',
+    };
+  }
+
+  if (message.includes('quota') || message.includes('Too Many Requests') || message.includes('429')) {
+    return {
+      status: 429,
+      error: 'The AI provider quota has been exceeded. Use a key with available quota or try again later.',
+    };
+  }
+
+  return {
+    status: 500,
+    error: message,
+  };
+}
+
+function getPaidPlan(planId) {
+  if (typeof planId !== 'string') {
+    return null;
+  }
+
+  return paidPlanConfig[planId.toLowerCase()] || null;
+}
+
+function buildReceipt(uid, tier) {
+  return `st_${tier}_${uid.slice(0, 10)}_${Date.now().toString(36)}`.slice(0, 40);
+}
+
+function isPaymentGatewayReady() {
+  return Boolean(razorpayClient && razorpayKeyId && razorpayKeySecret);
+}
+
+function isOwnerProEmail(email) {
+  return typeof email === 'string' && ownerProEmails.has(email.trim().toLowerCase());
+}
+
+function extractWebhookUpgradeDetails(event) {
+  if (!event || !['payment.captured', 'order.paid'].includes(event.event)) {
+    return null;
+  }
+
+  const paymentEntity = event.payload?.payment?.entity || null;
+  const orderEntity = event.payload?.order?.entity || null;
+  const notes = paymentEntity?.notes || orderEntity?.notes || {};
+  const plan = getPaidPlan(notes.tier);
+
+  if (!plan || typeof notes.uid !== 'string' || !notes.uid.trim()) {
+    return null;
+  }
+
+  return {
+    uid: notes.uid,
+    tier: plan.tier,
+    email: notes.email || paymentEntity?.email || null,
+    orderId: paymentEntity?.order_id || orderEntity?.id || null,
+    paymentId: paymentEntity?.id || null,
+  };
+}
+
+async function activatePaidPlan({ uid, tier, email, orderId, paymentId, source }) {
+  if (!db) {
+    throw new Error('Firestore is not initialized');
+  }
+
+  const plan = getPaidPlan(tier);
+  if (!plan) {
+    throw new Error(`Unsupported plan activation request: ${tier}`);
+  }
+
+  const activatedAt = new Date();
+  const expiresAt = new Date(activatedAt.getTime() + plan.durationDays * 24 * 60 * 60 * 1000);
+  const userRef = db.collection('users').doc(uid);
+  const userSnapshot = await userRef.get();
+  const existingData = userSnapshot.exists ? userSnapshot.data() : {};
+
+  await userRef.set(
+    {
+      email: email || existingData.email || null,
+      tier: plan.tier,
+      currentPlan: plan.tier,
+      subscriptionStatus: 'active',
+      planActivatedAt: activatedAt,
+      planExpiresAt: expiresAt,
+      notesGeneratedToday: 0,
+      lastResetAt: activatedAt,
+      paymentProvider: 'razorpay',
+      razorpay: {
+        lastOrderId: orderId || null,
+        lastPaymentId: paymentId || null,
+        lastEventSource: source,
+        lastUpdatedAt: activatedAt,
+      },
+    },
+    { merge: true }
+  );
+}
+
+async function getAuthenticatedUserFromRequest(req) {
+  if (!firebaseAdminReady || !adminAuth) {
+    return null;
+  }
+
+  const authHeader = req.headers.authorization || '';
+  if (!authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+
+  const idToken = authHeader.slice('Bearer '.length).trim();
+  if (!idToken) {
+    return null;
+  }
+
+  try {
+    const decodedToken = await adminAuth.verifyIdToken(idToken);
+    const authenticatedUser = {
+      uid: decodedToken.uid,
+      email: decodedToken.email || null,
+      name: decodedToken.name || null,
+    };
+
+    if (db && isOwnerProEmail(authenticatedUser.email)) {
+      await db.collection('users').doc(authenticatedUser.uid).set(
+        {
+          email: authenticatedUser.email,
+          tier: 'pro',
+          currentPlan: 'pro',
+          subscriptionStatus: 'active',
+          paymentProvider: 'owner-whitelist',
+          notesGeneratedToday: 0,
+          lastResetAt: new Date(),
+        },
+        { merge: true }
+      );
+    }
+
+    return authenticatedUser;
+  } catch {
+    return null;
+  }
+}
+
+async function getAuthenticatedUidFromRequest(req) {
+  const authenticatedUser = await getAuthenticatedUserFromRequest(req);
+  return authenticatedUser?.uid || null;
+}
+
+app.post('/api/payments/razorpay/order', async (req, res) => {
+  try {
+    if (!firebaseAdminReady || !db) {
+      return res.status(503).json({
+        error: 'Plan enforcement is unavailable. Configure FIREBASE_SERVICE_ACCOUNT before starting checkout.',
+      });
+    }
+
+    if (!isPaymentGatewayReady()) {
+      return res.status(503).json({
+        error: 'Razorpay is not configured. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET on the backend.',
+      });
+    }
+
+    const authenticatedUser = await getAuthenticatedUserFromRequest(req);
+    if (!authenticatedUser) {
+      return res.status(401).json({
+        error: 'Authentication required. Please sign in again and retry.',
+      });
+    }
+
+    const plan = getPaidPlan(req.body?.plan);
+    if (!plan) {
+      return res.status(400).json({ error: 'Unsupported paid plan.' });
+    }
+
+    const userRef = db.collection('users').doc(authenticatedUser.uid);
+    const userSnapshot = await userRef.get();
+    const userData = userSnapshot.exists ? userSnapshot.data() : {};
+
+    if ((userData.tier || 'free') === plan.tier) {
+      return res.status(409).json({ error: `Your ${plan.label} plan is already active.` });
+    }
+
+    const order = await razorpayClient.orders.create({
+      amount: plan.amount,
+      currency: plan.currency,
+      receipt: buildReceipt(authenticatedUser.uid, plan.tier),
+      notes: {
+        uid: authenticatedUser.uid,
+        tier: plan.tier,
+        email: authenticatedUser.email || userData.email || '',
+        app: 'StudyTube AI',
+      },
+    });
+
+    return res.json({
+      keyId: razorpayKeyId,
+      orderId: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      name: 'StudyTube AI',
+      description: plan.description,
+      plan: {
+        tier: plan.tier,
+        label: plan.label,
+        durationDays: plan.durationDays,
+      },
+      prefill: {
+        email: authenticatedUser.email || userData.email || '',
+        name: authenticatedUser.name || userData.name || '',
+      },
+    });
+  } catch (error) {
+    console.error('Razorpay order creation error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to create Razorpay order.' });
+  }
+});
+
+app.post('/api/payments/razorpay/verify', async (req, res) => {
+  try {
+    if (!firebaseAdminReady || !db) {
+      return res.status(503).json({
+        error: 'Plan enforcement is unavailable. Configure FIREBASE_SERVICE_ACCOUNT before verifying payments.',
+      });
+    }
+
+    if (!isPaymentGatewayReady()) {
+      return res.status(503).json({
+        error: 'Razorpay is not configured. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET on the backend.',
+      });
+    }
+
+    const authenticatedUser = await getAuthenticatedUserFromRequest(req);
+    if (!authenticatedUser) {
+      return res.status(401).json({
+        error: 'Authentication required. Please sign in again and retry.',
+      });
+    }
+
+    const plan = getPaidPlan(req.body?.plan);
+    const razorpayOrderId = req.body?.razorpay_order_id;
+    const razorpayPaymentId = req.body?.razorpay_payment_id;
+    const razorpaySignature = req.body?.razorpay_signature;
+
+    if (!plan) {
+      return res.status(400).json({ error: 'Unsupported paid plan.' });
+    }
+
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+      return res.status(400).json({ error: 'Missing Razorpay payment verification fields.' });
+    }
+
+    const expectedSignature = crypto
+      .createHmac('sha256', razorpayKeySecret)
+      .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+      .digest('hex');
+
+    if (expectedSignature !== razorpaySignature) {
+      return res.status(400).json({ error: 'Invalid Razorpay payment signature.' });
+    }
+
+    const payment = await razorpayClient.payments.fetch(razorpayPaymentId);
+    if (payment.order_id !== razorpayOrderId) {
+      return res.status(400).json({ error: 'Razorpay payment does not match the created order.' });
+    }
+
+    if (payment.notes?.uid && payment.notes.uid !== authenticatedUser.uid) {
+      return res.status(403).json({ error: 'This payment was created for a different user account.' });
+    }
+
+    if (!['authorized', 'captured'].includes(payment.status)) {
+      return res.status(409).json({ error: `Payment is not complete yet. Current status: ${payment.status}.` });
+    }
+
+    await activatePaidPlan({
+      uid: authenticatedUser.uid,
+      tier: plan.tier,
+      email: authenticatedUser.email || payment.email || null,
+      orderId: razorpayOrderId,
+      paymentId: razorpayPaymentId,
+      source: 'checkout-verify',
+    });
+
+    return res.json({
+      success: true,
+      tier: plan.tier,
+      currentPlan: plan.label,
+      expiresInDays: plan.durationDays,
+    });
+  } catch (error) {
+    console.error('Razorpay payment verification error:', error);
+    return res.status(500).json({ error: error.message || 'Failed to verify Razorpay payment.' });
+  }
+});
+
 // Generate notes endpoint
 app.post('/api/generate-notes', async (req, res) => {
   try {
-    const { url, content, userId } = req.body;
+    const { url, content } = req.body;
+
+    if (!firebaseAdminReady || !db) {
+      return res.status(503).json({
+        error: 'Plan enforcement is unavailable. Configure FIREBASE_SERVICE_ACCOUNT on backend before generating notes.',
+      });
+    }
+
+    const authenticatedUid = await getAuthenticatedUidFromRequest(req);
+    if (!authenticatedUid) {
+      return res.status(401).json({
+        error: 'Authentication required. Please sign in again and retry.',
+      });
+    }
+
+    // Always trust only server-verified uid.
+    const effectiveUserId = authenticatedUid;
 
     if (!url && !content) {
       return res.status(400).json({ error: 'YouTube URL or content is required' });
     }
 
     // Check daily note limit for free users
-    if (userId && db) {
-      const userRef = db.collection('users').doc(userId);
+    if (effectiveUserId) {
+      const userRef = db.collection('users').doc(effectiveUserId);
       const userDoc = await userRef.get();
       const userData = userDoc.exists ? userDoc.data() : {};
       const userTier = userData.tier || 'free';
@@ -79,28 +668,29 @@ app.post('/api/generate-notes', async (req, res) => {
       }
     }
 
-    // For MVP, we'll use provided content or generate sample content
+    // Use provided content or fetch transcript from YouTube URL.
     let textContent = content;
 
     if (url && !content) {
-      // Extract video ID from URL (simple validation)
-      const videoIdMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/);
-      if (!videoIdMatch) {
+      const videoId = extractYouTubeVideoId(url);
+      if (!videoId || !isValidYouTubeVideoId(videoId)) {
         return res.status(400).json({ error: 'Invalid YouTube URL' });
       }
-      const videoId = videoIdMatch[1];
-      // For MVP, use sample content
-      textContent = `[Sample Content for Video: ${videoId}]
-This is sample educational content for demonstration. In production, this would be the actual YouTube transcript.
-Key Topics: This demonstrates how the StudyTube AI system generates comprehensive study notes from video content.
-The system processes educational videos and creates structured study materials to help students learn effectively.`;
+
+      try {
+        textContent = await fetchTranscriptWithFallback(videoId);
+      } catch (transcriptError) {
+        return res.status(422).json({
+          error: transcriptError.message || 'Could not fetch transcript for this video. Try another video with captions.',
+        });
+      }
     }
 
     const notes = await generateStudyNotes(textContent);
 
     // Increment user's daily notes count
-    if (userId && db) {
-      const userRef = db.collection('users').doc(userId);
+    if (effectiveUserId) {
+      const userRef = db.collection('users').doc(effectiveUserId);
       const userDoc = await userRef.get();
       const userData = userDoc.exists ? userDoc.data() : {};
       const lastReset = userData.lastResetAt ? userData.lastResetAt.toDate() : null;
@@ -130,23 +720,23 @@ The system processes educational videos and creates structured study materials t
     res.json({ notes });
   } catch (error) {
     console.error('Error:', error);
-    res.status(500).json({
-      error: error.message || 'Failed to generate notes'
+    const formattedError = formatAiError(error);
+    res.status(formattedError.status).json({
+      error: formattedError.error,
     });
   }
 });
 
-// Generate study notes using NVIDIA DeepSeek v3.2
+// Generate study notes using Google Gemini, Groq, OpenRouter, or NVIDIA DeepSeek
 async function generateStudyNotes(context) {
-  const apiKey = process.env.NVIDIA_API_KEY;
-  if (!apiKey) {
-    throw new Error('NVIDIA API key not configured');
-  }
+  const googleApiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  const groqApiKey = process.env.GROQ_API_KEY;
+  const openRouterApiKey = process.env.OPENROUTER_API_KEY;
+  const nvidiaApiKey = process.env.NVIDIA_API_KEY;
 
-  const client = new OpenAI({
-    baseURL: 'https://integrate.api.nvidia.com/v1',
-    apiKey,
-  });
+  if (!googleApiKey && !groqApiKey && !openRouterApiKey && !nvidiaApiKey) {
+    throw new Error('No supported AI API key is configured');
+  }
 
   const prompt = `You are an expert study notes generator. Create comprehensive study notes based on this content:
 
@@ -177,15 +767,57 @@ Provide the study notes in this JSON format ONLY (no other text):
 Return ONLY valid JSON.`;
 
   try {
-    const completion = await client.chat.completions.create({
-      model: 'deepseek-ai/deepseek-v3.2',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 1,
-      top_p: 0.95,
-      max_tokens: 8192,
-    });
+    let responseText = '';
 
-    const responseText = completion.choices[0].message.content;
+    if (googleApiKey) {
+      const genAI = new GoogleGenerativeAI(googleApiKey);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      const result = await model.generateContent(prompt);
+      responseText = result.response.text();
+    } else if (groqApiKey) {
+      const client = new OpenAI({
+        baseURL: 'https://api.groq.com/openai/v1',
+        apiKey: groqApiKey,
+      });
+
+      const completion = await client.chat.completions.create({
+        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        max_tokens: 4096,
+      });
+
+      responseText = completion.choices[0].message.content ?? '';
+    } else if (openRouterApiKey) {
+      const client = new OpenAI({
+        baseURL: 'https://openrouter.ai/api/v1',
+        apiKey: openRouterApiKey,
+      });
+
+      const completion = await client.chat.completions.create({
+        model: process.env.OPENROUTER_MODEL || 'openrouter/auto',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        max_tokens: 4096,
+      });
+
+      responseText = completion.choices[0].message.content ?? '';
+    } else {
+      const client = new OpenAI({
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+        apiKey: nvidiaApiKey,
+      });
+
+      const completion = await client.chat.completions.create({
+        model: 'deepseek-ai/deepseek-v3.2',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 1,
+        top_p: 0.95,
+        max_tokens: 8192,
+      });
+
+      responseText = completion.choices[0].message.content ?? '';
+    }
 
     // Parse JSON from response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -195,7 +827,7 @@ Return ONLY valid JSON.`;
 
     return JSON.parse(jsonMatch[0]);
   } catch (error) {
-    throw new Error(`NVIDIA API error: ${error.message}`);
+    throw new Error(`AI API error: ${error.message}`);
   }
 }
 

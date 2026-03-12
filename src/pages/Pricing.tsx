@@ -1,17 +1,101 @@
-import { Check, Sparkles } from "lucide-react";
+import { Check, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
-import { auth } from "@/integrations/firebase";
-import { onAuthStateChanged } from "firebase/auth";
+import { auth, db } from "@/integrations/firebase/client";
+import { onAuthStateChanged, type User as FirebaseUser } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { toast } from "sonner";
+
+type UserTier = "free" | "pro" | "team";
+type PaidPlanId = "pro";
+
+type RazorpayOrderResponse = {
+  keyId: string;
+  orderId: string;
+  amount: number;
+  currency: string;
+  name: string;
+  description: string;
+  plan: {
+    tier: PaidPlanId;
+    label: string;
+    durationDays: number;
+  };
+  prefill: {
+    email: string;
+    name: string;
+  };
+};
+
+type RazorpaySuccessResponse = {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+};
+
+type RazorpayCheckoutOptions = {
+  key: string;
+  amount: number;
+  currency: string;
+  name: string;
+  description: string;
+  order_id: string;
+  prefill?: {
+    email?: string;
+    name?: string;
+  };
+  theme?: {
+    color?: string;
+  };
+  modal?: {
+    ondismiss?: () => void;
+  };
+  handler: (response: RazorpaySuccessResponse) => void | Promise<void>;
+};
+
+type RazorpayCheckoutInstance = {
+  open: () => void;
+};
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayCheckoutOptions) => RazorpayCheckoutInstance;
+  }
+}
+
+const RAZORPAY_SCRIPT_URL = "https://checkout.razorpay.com/v1/checkout.js";
+
+const loadRazorpayCheckout = async () => {
+  if (window.Razorpay) {
+    return true;
+  }
+
+  const existingScript = document.querySelector(`script[src="${RAZORPAY_SCRIPT_URL}"]`) as HTMLScriptElement | null;
+  if (existingScript) {
+    return new Promise<boolean>((resolve) => {
+      existingScript.addEventListener("load", () => resolve(true), { once: true });
+      existingScript.addEventListener("error", () => resolve(false), { once: true });
+    });
+  }
+
+  return new Promise<boolean>((resolve) => {
+    const script = document.createElement("script");
+    script.src = RAZORPAY_SCRIPT_URL;
+    script.async = true;
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+};
 
 const plans = [
   {
     name: "Free",
-    price: "$0",
+    price: "₹0",
     period: "forever",
     description: "Bring maximum traffic and build trust.",
     features: [
@@ -25,7 +109,7 @@ const plans = [
   },
   {
     name: "Pro",
-    price: "$2.99",
+    price: "₹299",
     period: "/month",
     description: "Cheaper than ChatGPT Plus — built for students.",
     features: [
@@ -41,7 +125,7 @@ const plans = [
   },
   {
     name: "Team",
-    price: "$9.99",
+    price: "Custom",
     period: "/month",
     description: "For study groups, small classes & educators.",
     features: [
@@ -58,22 +142,139 @@ const plans = [
 ];
 
 const Pricing = () => {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [userTier, setUserTier] = useState<UserTier>("free");
+  const [processingPlan, setProcessingPlan] = useState<PaidPlanId | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setIsLoggedIn(!!user);
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+
+      if (!user) {
+        setUserTier("free");
+        return;
+      }
+
+      try {
+        const userSnapshot = await getDoc(doc(db, "users", user.uid));
+        setUserTier((userSnapshot.data()?.tier as UserTier) || "free");
+      } catch {
+        setUserTier("free");
+      }
     });
+
     return () => unsubscribe();
   }, []);
 
+  const verifyPayment = async (plan: PaidPlanId, paymentResponse: RazorpaySuccessResponse) => {
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
+    const idToken = await auth.currentUser?.getIdToken();
+
+    const response = await fetch(`${backendUrl}/api/payments/razorpay/verify`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+      },
+      body: JSON.stringify({
+        plan,
+        ...paymentResponse,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || "Payment verification failed.");
+    }
+  };
+
+  const startProCheckout = async () => {
+    if (!currentUser) {
+      navigate("/auth?next=/pricing");
+      return;
+    }
+
+    if (userTier === "pro" || userTier === "team") {
+      navigate("/generate");
+      return;
+    }
+
+    setProcessingPlan("pro");
+
+    try {
+      const scriptLoaded = await loadRazorpayCheckout();
+      if (!scriptLoaded || !window.Razorpay) {
+        throw new Error("Razorpay checkout could not be loaded. Please disable blockers and retry.");
+      }
+
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
+      const idToken = await currentUser.getIdToken();
+      const orderResponse = await fetch(`${backendUrl}/api/payments/razorpay/order`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ plan: "pro" }),
+      });
+
+      if (!orderResponse.ok) {
+        const errorData = await orderResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to start Razorpay checkout.");
+      }
+
+      const orderData = (await orderResponse.json()) as RazorpayOrderResponse;
+      const checkout = new window.Razorpay({
+        key: orderData.keyId,
+        amount: orderData.amount,
+        currency: orderData.currency,
+        name: orderData.name,
+        description: orderData.description,
+        order_id: orderData.orderId,
+        prefill: orderData.prefill,
+        theme: {
+          color: "#0f766e",
+        },
+        modal: {
+          ondismiss: () => setProcessingPlan(null),
+        },
+        handler: async (paymentResponse) => {
+          setProcessingPlan("pro");
+
+          try {
+            await verifyPayment("pro", paymentResponse);
+            setUserTier("pro");
+            toast.success("Pro plan activated. Unlimited notes are now enabled.");
+            navigate("/generate");
+          } catch (error: any) {
+            toast.error(error?.message || "Payment succeeded but verification failed. Contact support if this continues.");
+          } finally {
+            setProcessingPlan(null);
+          }
+        },
+      });
+
+      setProcessingPlan(null);
+      checkout.open();
+    } catch (error: any) {
+      setProcessingPlan(null);
+      toast.error(error?.message || "Failed to start Razorpay checkout.");
+    }
+  };
+
   const handleCta = (planName: string) => {
     if (planName === "Free") {
-      navigate(isLoggedIn ? "/generate" : "/auth");
-    } else {
-      navigate(isLoggedIn ? "/generate" : "/auth");
+      navigate(currentUser ? "/generate" : "/auth?next=/generate");
+      return;
     }
+
+    if (planName === "Team") {
+      toast.info("Team billing is still handled manually. Use Pro for self-serve checkout right now.");
+      return;
+    }
+
+    void startProCheckout();
   };
 
   return (
@@ -106,10 +307,26 @@ const Pricing = () => {
             >
               Start free and upgrade when you need more power.
             </motion.p>
+            {currentUser && userTier !== "free" && (
+              <motion.p
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.25 }}
+                className="text-sm text-primary mt-4 font-medium"
+              >
+                Your current plan is {userTier.charAt(0).toUpperCase() + userTier.slice(1)}.
+              </motion.p>
+            )}
           </div>
 
           <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
             {plans.map((plan, i) => (
+              (() => {
+                const normalizedName = plan.name.toLowerCase() as UserTier;
+                const isCurrentPlan = normalizedName === userTier || (userTier === "team" && plan.name === "Pro");
+                const isLoading = processingPlan === "pro" && plan.name === "Pro";
+
+                return (
               <motion.div
                 key={plan.name}
                 initial={{ opacity: 0, y: 30 }}
@@ -160,16 +377,28 @@ const Pricing = () => {
                   </p>
                 )}
                 <Button
-                    onClick={() => handleCta(plan.name)}
-                    className={`w-full font-semibold rounded-xl ${
-                      plan.popular
-                        ? "gradient-bg text-primary-foreground border-0 shadow-sm"
-                        : "bg-muted hover:bg-muted/80 text-foreground border-border"
-                    }`}
-                  >
-                    {plan.cta}
-                  </Button>
+                  onClick={() => handleCta(plan.name)}
+                  disabled={isLoading || isCurrentPlan}
+                  className={`w-full font-semibold rounded-xl ${
+                    plan.popular
+                      ? "gradient-bg text-primary-foreground border-0 shadow-sm"
+                      : "bg-muted hover:bg-muted/80 text-foreground border-border"
+                  }`}
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Starting Checkout...
+                    </>
+                  ) : isCurrentPlan ? (
+                    userTier === "team" && plan.name === "Pro" ? "Included in Team" : "Current Plan"
+                  ) : (
+                    plan.cta
+                  )}
+                </Button>
               </motion.div>
+                );
+              })()
             ))}
           </div>
         </div>

@@ -11,6 +11,54 @@ import { auth } from "@/integrations/firebase/client";
 
 const YOUTUBE_REGEX = /^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)[\w-]+/;
 
+const normalizeStudyNotes = (rawNotes: any): StudyNotes => {
+  const rawKeyTerms = Array.isArray(rawNotes?.keyTerms) ? rawNotes.keyTerms : [];
+  const rawDefinitions = Array.isArray(rawNotes?.definitions) ? rawNotes.definitions : [];
+  const rawSections = Array.isArray(rawNotes?.sections) ? rawNotes.sections : [];
+  const rawNotesList = Array.isArray(rawNotes?.notes) ? rawNotes.notes : [];
+  const rawQuizQuestions = Array.isArray(rawNotes?.quizQuestions) ? rawNotes.quizQuestions : [];
+
+  return {
+    title: typeof rawNotes?.title === "string" && rawNotes.title.trim() ? rawNotes.title : "Study Notes",
+    summary: typeof rawNotes?.summary === "string" ? rawNotes.summary : "",
+    keyPoints: Array.isArray(rawNotes?.keyPoints)
+      ? rawNotes.keyPoints.filter((point: unknown): point is string => typeof point === "string" && point.trim().length > 0)
+      : [],
+    notes: rawNotesList.length > 0
+      ? rawNotesList.filter((note: unknown): note is string => typeof note === "string" && note.trim().length > 0)
+      : rawSections.flatMap((section: any) => {
+          const sectionParts = [section?.heading, section?.content];
+          return sectionParts.filter((part: unknown): part is string => typeof part === "string" && part.trim().length > 0);
+        }),
+    definitions: rawDefinitions.length > 0
+      ? rawDefinitions.filter(
+          (definition: any): definition is { term: string; definition: string } =>
+            typeof definition?.term === "string" &&
+            definition.term.trim().length > 0 &&
+            typeof definition?.definition === "string" &&
+            definition.definition.trim().length > 0
+        )
+      : rawKeyTerms
+          .filter((term: unknown): term is string => typeof term === "string" && term.trim().length > 0)
+          .map((term) => {
+            const [keyTerm, ...definitionParts] = term.split(":");
+            return {
+              term: keyTerm?.trim() || "Term",
+              definition: definitionParts.join(":").trim() || term.trim(),
+            };
+          }),
+    quizQuestions: rawQuizQuestions
+      .filter((question: any) => typeof question?.question === "string" && question.question.trim().length > 0)
+      .map((question: any) => ({
+        question: question.question,
+        options: Array.isArray(question.options)
+          ? question.options.filter((option: unknown): option is string => typeof option === "string" && option.trim().length > 0)
+          : [],
+        answer: typeof question.answer === "string" ? question.answer : "",
+      })),
+  };
+};
+
 const Generate = () => {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -65,11 +113,19 @@ const Generate = () => {
     try {
       // Call backend API
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+      const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+
+      const requestHeaders: HeadersInit = {
+        'Content-Type': 'application/json',
+      };
+
+      if (idToken) {
+        requestHeaders.Authorization = `Bearer ${idToken}`;
+      }
+
       const response = await fetch(`${backendUrl}/api/generate-notes`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: requestHeaders,
         body: JSON.stringify({ url: url.trim(), userId: userId }),
       });
 
@@ -94,7 +150,7 @@ const Generate = () => {
         throw new Error('No notes were generated. Please try again.');
       }
 
-      setNotes(data.notes);
+      setNotes(normalizeStudyNotes(data.notes));
       toast.success("Notes generated successfully!");
     } catch (err: any) {
       const msg = err?.message || "Failed to generate notes. Please try again.";

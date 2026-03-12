@@ -7,6 +7,7 @@ import Index from "./pages/Index";
 import Generate from "./pages/Generate";
 import Pricing from "./pages/Pricing";
 import Auth from "./pages/Auth";
+import Support from "./pages/Support";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -22,6 +23,7 @@ const App = () => (
           <Route path="/generate" element={<Generate />} />
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/auth" element={<Auth />} />
+          <Route path="/support" element={<Support />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>

@@ -18,6 +18,7 @@ const Footer = () => {
             <Link to="/" className="hover:text-foreground transition-colors">Home</Link>
             <Link to="/generate" className="hover:text-foreground transition-colors">Generate</Link>
             <Link to="/pricing" className="hover:text-foreground transition-colors">Pricing</Link>
+            <Link to="/support" className="hover:text-foreground transition-colors">Support</Link>
           </div>
           <p className="text-xs text-muted-foreground/60">© 2026 StudyTube AI</p>
         </div>
