@@ -146,6 +146,11 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'StudyTube Backend is running' });
 });
 
+// Vercel function routes are prefixed with /api.
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'StudyTube Backend is running' });
+});
+
 // Support contact endpoint
 app.post('/api/support/contact', async (req, res) => {
   const { name, email, subject, message } = req.body || {};
@@ -919,9 +924,13 @@ Return ONLY valid JSON.`;
   }
 }
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`✅ StudyTube Backend running on port ${PORT}`);
-  console.log(`📍 Health check: http://localhost:${PORT}/health`);
-  console.log(`📍 API endpoint: http://localhost:${PORT}/api/generate-notes`);
-});
+// Start a local server only outside Vercel serverless runtime.
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`✅ StudyTube Backend running on port ${PORT}`);
+    console.log(`📍 Health check: http://localhost:${PORT}/health`);
+    console.log(`📍 API endpoint: http://localhost:${PORT}/api/generate-notes`);
+  });
+}
+
+export default app;

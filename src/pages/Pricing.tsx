@@ -168,7 +168,7 @@ const Pricing = () => {
   }, []);
 
   const verifyPayment = async (plan: PaidPlanId, paymentResponse: RazorpaySuccessResponse) => {
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || "";
     const idToken = await auth.currentUser?.getIdToken();
 
     const response = await fetch(`${backendUrl}/api/payments/razorpay/verify`, {
@@ -208,7 +208,7 @@ const Pricing = () => {
         throw new Error("Razorpay checkout could not be loaded. Please disable blockers and retry.");
       }
 
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || "";
       const idToken = await currentUser.getIdToken();
       const orderResponse = await fetch(`${backendUrl}/api/payments/razorpay/order`, {
         method: "POST",

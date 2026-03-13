@@ -86,7 +86,7 @@ const Support = () => {
 
     setSending(true);
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || "";
       const res = await fetch(`${backendUrl}/api/support/contact`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
