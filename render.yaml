@@ -33,7 +33,7 @@ services:
       - key: ALLOWED_ORIGINS
         value: https://studytube-ai-frontend.onrender.com
 
-  - type: static_site
+  - type: static
     name: studytube-ai-frontend
     plan: free
     buildCommand: npm run build
