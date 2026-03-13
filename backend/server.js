@@ -89,7 +89,7 @@ app.use(cors({
   credentials: true,
 }));
 
-app.post('/api/payments/razorpay/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+app.post(['/api/payments/razorpay/webhook', '/payments/razorpay/webhook'], express.raw({ type: 'application/json' }), async (req, res) => {
   try {
     if (!firebaseAdminReady || !db) {
       return res.status(503).json({
@@ -152,7 +152,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Support contact endpoint
-app.post('/api/support/contact', async (req, res) => {
+app.post(['/api/support/contact', '/support/contact'], async (req, res) => {
   const { name, email, subject, message } = req.body || {};
   if (!name || !email || !message) {
     return res.status(400).json({ error: 'name, email, and message are required.' });
@@ -517,7 +517,7 @@ function getFreeTierIdentityDocId(req, date = new Date()) {
   return `${getDayKey(date)}:${getFreeTierIdentityHash(req)}`;
 }
 
-app.post('/api/payments/razorpay/order', async (req, res) => {
+app.post(['/api/payments/razorpay/order', '/payments/razorpay/order'], async (req, res) => {
   try {
     if (!firebaseAdminReady || !db) {
       return res.status(503).json({
@@ -586,7 +586,7 @@ app.post('/api/payments/razorpay/order', async (req, res) => {
   }
 });
 
-app.post('/api/payments/razorpay/verify', async (req, res) => {
+app.post(['/api/payments/razorpay/verify', '/payments/razorpay/verify'], async (req, res) => {
   try {
     if (!firebaseAdminReady || !db) {
       return res.status(503).json({
@@ -664,7 +664,7 @@ app.post('/api/payments/razorpay/verify', async (req, res) => {
 });
 
 // Generate notes endpoint
-app.post('/api/generate-notes', async (req, res) => {
+app.post(['/api/generate-notes', '/generate-notes'], async (req, res) => {
   try {
     const { url, content } = req.body;
 
