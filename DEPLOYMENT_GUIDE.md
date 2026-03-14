@@ -20,7 +20,7 @@
 
 3. **Set Environment Variables**
    - Go to Environment tab
-   - Add: `GOOGLE_GEMINI_API_KEY=AIzaSyBK6O7Fu2_4TF-VJnoJArffhAOicKQL8uQ`
+   - Add: `GOOGLE_GEMINI_API_KEY=your-google-gemini-api-key`
    - Add: `FIREBASE_SERVICE_ACCOUNT=<your-firebase-service-account-json>`
    - Deploy
 
@@ -38,12 +38,12 @@
 2. **Update .env for Production**
    ```env
    VITE_BACKEND_URL=https://studytube-ai-backend.onrender.com
-   VITE_FIREBASE_API_KEY=AIzaSyBYM1XdXXNqOqOEueigNtF03GJUhoMmz2E
-   VITE_FIREBASE_AUTH_DOMAIN=studytube-ai-82345.firebaseapp.com
-   VITE_FIREBASE_PROJECT_ID=studytube-ai-82345
-   VITE_FIREBASE_STORAGE_BUCKET=studytube-ai-82345.firebasestorage.app
-   VITE_FIREBASE_MESSAGING_SENDER_ID=413543712470
-   VITE_FIREBASE_APP_ID=1:413543712470:web:550e60d4be02a722286b77
+   VITE_FIREBASE_API_KEY=your-firebase-api-key
+   VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+   VITE_FIREBASE_PROJECT_ID=your-project-id
+   VITE_FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
+   VITE_FIREBASE_MESSAGING_SENDER_ID=your-messaging-sender-id
+   VITE_FIREBASE_APP_ID=your-firebase-app-id
    ```
 
 3. **Deploy to Netlify**
@@ -110,19 +110,19 @@
 **Backend (.env)**
 ```
 PORT=3000
-GOOGLE_GEMINI_API_KEY=AIzaSyBK6O7Fu2_4TF-VJnoJArffhAOicKQL8uQ
+GOOGLE_GEMINI_API_KEY=your-google-gemini-api-key
 FIREBASE_SERVICE_ACCOUNT={"type":"service_account",...}
 ```
 
 **Frontend (.env)**
 ```
 VITE_BACKEND_URL=https://your-render-backend.onrender.com
-VITE_FIREBASE_API_KEY=AIzaSyBYM1XdXXNqOqOEueigNtF03GJUhoMmz2E
-VITE_FIREBASE_AUTH_DOMAIN=studytube-ai-82345.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=studytube-ai-82345
-VITE_FIREBASE_STORAGE_BUCKET=studytube-ai-82345.firebasestorage.app
-VITE_FIREBASE_MESSAGING_SENDER_ID=413543712470
-VITE_FIREBASE_APP_ID=1:413543712470:web:550e60d4be02a722286b77
+VITE_FIREBASE_API_KEY=your-firebase-api-key
+VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your-project-id
+VITE_FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
+VITE_FIREBASE_MESSAGING_SENDER_ID=your-messaging-sender-id
+VITE_FIREBASE_APP_ID=your-firebase-app-id
 ```
 
 ---

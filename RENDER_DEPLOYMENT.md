@@ -35,7 +35,7 @@ cd backend && npm install && node server.js
 
 **Environment Variables:** Add these in Render dashboard:
 ```
-GOOGLE_GEMINI_API_KEY=AIzaSyBK6O7Fu2_4TF-VJnoJArffhAOicKQL8uQ
+GOOGLE_GEMINI_API_KEY=your-google-gemini-api-key
 ```
 
 ## Step 4: Deploy
