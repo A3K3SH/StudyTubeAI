@@ -42,7 +42,6 @@ services:
   - type: web
     name: studytube-ai-frontend
     runtime: static
-    plan: free
     buildCommand: npm run build
     staticPublishPath: dist
     routes:
