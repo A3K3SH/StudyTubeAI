@@ -6,9 +6,11 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import Razorpay from 'razorpay';
 import { YoutubeTranscript } from 'youtube-transcript';
+import ytdl from '@distube/ytdl-core';
 import ytdlp from 'yt-dlp-exec';
-import { createReadStream } from 'fs';
+import { createReadStream, createWriteStream } from 'fs';
 import { rm } from 'fs/promises';
+import { pipeline } from 'stream/promises';
 import os from 'os';
 import path from 'path';
 import { initializeApp, cert } from 'firebase-admin/app';
@@ -280,21 +282,49 @@ async function fetchYouTubeTranscript(videoId) {
   throw new Error('Could not fetch transcript for this video. Try another video with captions.');
 }
 
-function downloadYouTubeAudio(videoId) {
+async function downloadYouTubeAudioWithNodeFallback(videoId) {
+  const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const tempPath = path.join(os.tmpdir(), `studytube-node-${videoId}-${Date.now()}.webm`);
+
+  try {
+    const audioStream = ytdl(sourceUrl, {
+      quality: 'highestaudio',
+      filter: 'audioonly',
+      highWaterMark: 1 << 25,
+    });
+
+    await pipeline(audioStream, createWriteStream(tempPath));
+    return tempPath;
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => {});
+    throw new Error(`Node audio fallback failed: ${error.message || error}`);
+  }
+}
+
+async function downloadYouTubeAudio(videoId) {
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const tempPath = path.join(os.tmpdir(), `studytube-${videoId}-${Date.now()}.webm`);
 
-  return ytdlp(sourceUrl, {
-    output: tempPath,
-    format: 'bestaudio[ext=webm]/bestaudio',
-    noPlaylist: true,
-    noWarnings: true,
-    quiet: true,
-  })
-    .then(() => tempPath)
-    .catch((error) => {
-      throw new Error(`Audio download failed: ${error.message || error}`);
+  try {
+    await ytdlp(sourceUrl, {
+      output: tempPath,
+      format: 'bestaudio[ext=webm]/bestaudio',
+      noPlaylist: true,
+      noWarnings: true,
+      quiet: true,
     });
+    return tempPath;
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => {});
+
+    try {
+      return await downloadYouTubeAudioWithNodeFallback(videoId);
+    } catch (fallbackError) {
+      throw new Error(
+        `Audio download failed: ${error.message || error}. ${fallbackError.message || fallbackError}`
+      );
+    }
+  }
 }
 
 async function transcribeAudioWithGroq(audioPath) {
