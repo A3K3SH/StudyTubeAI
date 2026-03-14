@@ -346,6 +346,16 @@ function parseSrtContent(srtContent) {
     .trim();
 }
 
+function isYouTubeBotBlockMessage(message) {
+  if (!message) return false;
+  const normalizedMessage = String(message).toLowerCase();
+  return (
+    normalizedMessage.includes('sign in to confirm you\'re not a bot') ||
+    normalizedMessage.includes('use --cookies') ||
+    normalizedMessage.includes('youtube blocked')
+  );
+}
+
 async function fetchYouTubeTranscriptWithYtdlpSubs(videoId) {
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), `studytube-subs-${videoId}-`));
@@ -491,10 +501,11 @@ async function fetchTranscriptWithFallback(videoId) {
         const transcriptMessage = transcriptError?.message || 'Transcript fetch failed';
         const subtitleMessage = subtitleFallbackMessage;
         const fallbackMessage = fallbackError?.message || 'Audio transcription fallback failed';
+        const combinedFailureMessage = `${transcriptMessage} ${subtitleMessage} ${fallbackMessage}`;
 
-        if (fallbackMessage.includes('Sign in to confirm you\'re not a bot')) {
+        if (isYouTubeBotBlockMessage(combinedFailureMessage)) {
           throw new Error(
-            `Could not fetch transcript, subtitle fallback, or transcribe audio. ${transcriptMessage}. ${subtitleMessage}. YouTube blocked audio download on this server (bot verification). Add YOUTUBE_COOKIE in backend env, or use a video with captions enabled.`
+            'YouTube blocked this server IP with bot verification, so transcript/subtitle/audio extraction failed. Add YOUTUBE_COOKIE in backend env, or try a different video/server.'
           );
         }
 
