@@ -2,7 +2,6 @@ import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import cors from 'cors';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import OpenAI from 'openai';
 import { YoutubeTranscript } from 'youtube-transcript';
 
 if (!admin.apps.length) {
@@ -98,12 +97,13 @@ async function fetchYouTubeTranscript(videoId: string): Promise<string> {
 }
 
 async function generateStudyNotes(context: string): Promise<Record<string, unknown>> {
-  const googleApiKey = process.env.GOOGLE_GEMINI_API_KEY;
-  const groqApiKey = process.env.GROQ_API_KEY;
-
-  if (!googleApiKey && !groqApiKey) {
-    throw new Error('No supported AI API key is configured');
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('Google Gemini API key not configured');
   }
+
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.0-flash' });
 
   const prompt = `You are an expert study notes generator. Create comprehensive study notes based on this content:
 
@@ -134,28 +134,8 @@ Provide the study notes in this JSON format ONLY (no other text):
 Return ONLY valid JSON.`;
 
   try {
-    let responseText = '';
-
-    if (googleApiKey) {
-      const genAI = new GoogleGenerativeAI(googleApiKey);
-      const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.0-flash' });
-      const result = await model.generateContent(prompt);
-      responseText = result.response.text();
-    } else {
-      const client = new OpenAI({
-        baseURL: 'https://api.groq.com/openai/v1',
-        apiKey: groqApiKey,
-      });
-
-      const completion = await client.chat.completions.create({
-        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7,
-        max_tokens: 4096,
-      });
-
-      responseText = completion.choices[0]?.message?.content ?? '';
-    }
+    const result = await model.generateContent(prompt);
+    const responseText = result.response.text();
 
     // Parse JSON from response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -165,7 +145,7 @@ Return ONLY valid JSON.`;
 
     return JSON.parse(jsonMatch[0]);
   } catch (error) {
-    throw new Error(`AI API error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new Error(`Gemini API error: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -189,9 +169,7 @@ function getFunctionErrorStatus(message: string): number {
   return 500;
 }
 
-export const generateNotes = functions
-  .runWith({ secrets: ['GROQ_API_KEY'] })
-  .https.onRequest((req: any, res: any) => {
+export const generateNotes = functions.https.onRequest((req: any, res: any) => {
   corsHandler(req, res, async () => {
     try {
       if (req.method !== 'POST') {

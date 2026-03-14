@@ -263,30 +263,6 @@ function normalizeCookieHeader(cookieValue) {
     .join('; ');
 }
 
-function getDefaultFirebaseNotesFunctionUrl() {
-  const configuredUrl = (process.env.FIREBASE_NOTES_FUNCTION_URL || '').trim();
-  if (configuredUrl) {
-    return configuredUrl;
-  }
-
-  try {
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (!serviceAccountJson) {
-      return '';
-    }
-
-    const serviceAccount = JSON.parse(serviceAccountJson);
-    const projectId = typeof serviceAccount?.project_id === 'string' ? serviceAccount.project_id.trim() : '';
-    if (!projectId) {
-      return '';
-    }
-
-    return `https://us-central1-${projectId}.cloudfunctions.net/generateNotes`;
-  } catch {
-    return '';
-  }
-}
-
 function getYoutubeRequestOptions() {
   const headers = {
     'User-Agent':
@@ -306,7 +282,7 @@ function getYoutubeRequestOptions() {
 }
 
 async function generateNotesWithFirebaseFunction({ url, content }) {
-  const functionUrl = getDefaultFirebaseNotesFunctionUrl();
+  const functionUrl = (process.env.FIREBASE_NOTES_FUNCTION_URL || '').trim();
   if (!functionUrl) {
     return null;
   }
