@@ -250,16 +250,32 @@ function isValidYouTubeVideoId(videoId) {
   return typeof videoId === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(videoId);
 }
 
+function normalizeCookieHeader(cookieValue) {
+  if (typeof cookieValue !== 'string') {
+    return '';
+  }
+
+  return cookieValue
+    .replace(/[\r\n]+/g, ' ')
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('; ');
+}
+
 function getYoutubeRequestOptions() {
   const headers = {
     'User-Agent':
       process.env.YOUTUBE_USER_AGENT ||
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Accept-Language': 'en-US,en;q=0.9',
+    'Origin': 'https://www.youtube.com',
+    'Referer': 'https://www.youtube.com/',
   };
 
-  if (process.env.YOUTUBE_COOKIE) {
-    headers.Cookie = process.env.YOUTUBE_COOKIE;
+  const normalizedCookie = normalizeCookieHeader(process.env.YOUTUBE_COOKIE);
+  if (normalizedCookie) {
+    headers.Cookie = normalizedCookie;
   }
 
   return { headers };
