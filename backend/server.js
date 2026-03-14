@@ -597,15 +597,15 @@ async function fetchTranscriptWithFallback(videoId) {
         const fallbackMessage = fallbackError?.message || 'Audio transcription fallback failed';
         const combinedFailureMessage = `${transcriptMessage} ${subtitleMessage} ${fallbackMessage}`;
 
-        if (isYtdlpMissingBinaryMessage(combinedFailureMessage)) {
-          throw new Error(
-            'Server is missing yt-dlp binary on this deployment. Rebuild backend with Clear build cache in Render and redeploy.'
-          );
-        }
-
         if (isYouTubeBotBlockMessage(combinedFailureMessage)) {
           throw new Error(
             'YouTube blocked this server IP with bot verification, so transcript/subtitle/audio extraction failed. Add YOUTUBE_COOKIE in backend env, or try a different video/server.'
+          );
+        }
+
+        if (isYtdlpMissingBinaryMessage(combinedFailureMessage)) {
+          throw new Error(
+            'yt-dlp binary is missing on this deployment, so subtitle/primary audio fallback is unavailable. Rebuild backend with Clear build cache in Render and redeploy.'
           );
         }
 
