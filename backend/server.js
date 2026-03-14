@@ -281,44 +281,6 @@ function getYoutubeRequestOptions() {
   return { headers };
 }
 
-async function generateNotesWithFirebaseFunction({ url, content }) {
-  const functionUrl = (process.env.FIREBASE_NOTES_FUNCTION_URL || '').trim();
-  if (!functionUrl) {
-    return null;
-  }
-
-  const headers = {
-    'Content-Type': 'application/json',
-  };
-
-  const sharedSecret = (process.env.FIREBASE_NOTES_SHARED_SECRET || '').trim();
-  if (sharedSecret) {
-    headers['x-studytube-shared-secret'] = sharedSecret;
-  }
-
-  const response = await fetch(functionUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ url, content }),
-  });
-
-  const payload = await response.json().catch(() => null);
-
-  if (!response.ok) {
-    const error = new Error(payload?.error || `Firebase notes function failed with status ${response.status}`);
-    error.status = payload?.status || response.status || 502;
-    throw error;
-  }
-
-  if (!payload?.notes) {
-    const error = new Error('Firebase notes function returned no notes');
-    error.status = 502;
-    throw error;
-  }
-
-  return payload.notes;
-}
-
 async function fetchYouTubeTranscript(videoId) {
   const transcriptCandidates = [
     () => YoutubeTranscript.fetchTranscript(videoId),
@@ -1017,37 +979,25 @@ app.post(['/api/generate-notes', '/generate-notes'], async (req, res) => {
       }
     }
 
-    let notes;
+    // Use provided content or fetch transcript from YouTube URL.
+    let textContent = content;
 
-    try {
-      notes = await generateNotesWithFirebaseFunction({ url, content });
-    } catch (functionError) {
-      return res.status(functionError.status || 502).json({
-        error: functionError.message || 'Firebase notes function failed.',
-      });
-    }
-
-    if (!notes) {
-      // Use provided content or fetch transcript from YouTube URL.
-      let textContent = content;
-
-      if (url && !content) {
-        const videoId = extractYouTubeVideoId(url);
-        if (!videoId || !isValidYouTubeVideoId(videoId)) {
-          return res.status(400).json({ error: 'Invalid YouTube URL' });
-        }
-
-        try {
-          textContent = await fetchTranscriptWithFallback(videoId);
-        } catch (transcriptError) {
-          return res.status(422).json({
-            error: transcriptError.message || 'Could not fetch transcript for this video. Try another video with captions.',
-          });
-        }
+    if (url && !content) {
+      const videoId = extractYouTubeVideoId(url);
+      if (!videoId || !isValidYouTubeVideoId(videoId)) {
+        return res.status(400).json({ error: 'Invalid YouTube URL' });
       }
 
-      notes = await generateStudyNotes(textContent);
+      try {
+        textContent = await fetchTranscriptWithFallback(videoId);
+      } catch (transcriptError) {
+        return res.status(422).json({
+          error: transcriptError.message || 'Could not fetch transcript for this video. Try another video with captions.',
+        });
+      }
     }
+
+    const notes = await generateStudyNotes(textContent);
 
     // Increment user's daily notes count
     if (effectiveUserId) {

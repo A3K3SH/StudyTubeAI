@@ -36,10 +36,6 @@ services:
         value: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
       - key: YOUTUBE_COOKIE
         sync: false
-      - key: FIREBASE_NOTES_FUNCTION_URL
-        sync: false
-      - key: FIREBASE_NOTES_SHARED_SECRET
-        sync: false
       - key: ALLOWED_ORIGINS
         value: https://studytube-ai-frontend.onrender.com
 
