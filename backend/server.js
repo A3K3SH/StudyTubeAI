@@ -329,18 +329,15 @@ async function generateNotesWithFirebaseFunction({ url, content }) {
   const payload = await response.json().catch(() => null);
 
   if (!response.ok) {
-    // Treat missing/unavailable function as optional so Render can continue with local fallback.
-    if ([404, 405, 500, 502, 503, 504].includes(response.status)) {
-      return null;
-    }
-
     const error = new Error(payload?.error || `Firebase notes function failed with status ${response.status}`);
     error.status = payload?.status || response.status || 502;
     throw error;
   }
 
   if (!payload?.notes) {
-    return null;
+    const error = new Error('Firebase notes function returned no notes');
+    error.status = 502;
+    throw error;
   }
 
   return payload.notes;
@@ -1049,8 +1046,9 @@ app.post(['/api/generate-notes', '/generate-notes'], async (req, res) => {
     try {
       notes = await generateNotesWithFirebaseFunction({ url, content });
     } catch (functionError) {
-      console.warn('Firebase notes function unavailable, falling back to local generation:', functionError?.message || functionError);
-      notes = null;
+      return res.status(functionError.status || 502).json({
+        error: functionError.message || 'Firebase notes function failed.',
+      });
     }
 
     if (!notes) {
