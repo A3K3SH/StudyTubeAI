@@ -356,6 +356,16 @@ function isYouTubeBotBlockMessage(message) {
   );
 }
 
+function isYtdlpMissingBinaryMessage(message) {
+  if (!message) return false;
+  const normalizedMessage = String(message).toLowerCase();
+  return (
+    normalizedMessage.includes('spawn') &&
+    normalizedMessage.includes('yt-dlp') &&
+    normalizedMessage.includes('enoent')
+  );
+}
+
 async function fetchYouTubeTranscriptWithYtdlpSubs(videoId) {
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), `studytube-subs-${videoId}-`));
@@ -403,6 +413,9 @@ async function fetchYouTubeTranscriptWithYtdlpSubs(videoId) {
 
     throw new Error('No subtitle text could be extracted from this video.');
   } catch (error) {
+    if (isYtdlpMissingBinaryMessage(error?.message || error)) {
+      throw new Error('Subtitle extraction fallback unavailable: yt-dlp binary is missing on this server.');
+    }
     throw new Error(`Subtitle extraction fallback failed: ${error.message || error}`);
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -502,6 +515,12 @@ async function fetchTranscriptWithFallback(videoId) {
         const subtitleMessage = subtitleFallbackMessage;
         const fallbackMessage = fallbackError?.message || 'Audio transcription fallback failed';
         const combinedFailureMessage = `${transcriptMessage} ${subtitleMessage} ${fallbackMessage}`;
+
+        if (isYtdlpMissingBinaryMessage(combinedFailureMessage)) {
+          throw new Error(
+            'Server is missing yt-dlp binary on this deployment. Rebuild backend with Clear build cache in Render and redeploy.'
+          );
+        }
 
         if (isYouTubeBotBlockMessage(combinedFailureMessage)) {
           throw new Error(
