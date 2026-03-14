@@ -287,10 +287,6 @@ function getDefaultFirebaseNotesFunctionUrl() {
   }
 }
 
-function isYtdlpEnabled() {
-  return (process.env.ENABLE_YTDLP || '').trim().toLowerCase() === 'true';
-}
-
 function getYoutubeRequestOptions() {
   const headers = {
     'User-Agent':
@@ -452,10 +448,6 @@ function isYtdlpMissingBinaryMessage(message) {
 }
 
 async function fetchYouTubeTranscriptWithYtdlpSubs(videoId) {
-  if (!isYtdlpEnabled()) {
-    throw new Error('Subtitle extraction fallback is disabled on this deployment.');
-  }
-
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), `studytube-subs-${videoId}-`));
 
@@ -537,16 +529,11 @@ async function downloadYouTubeAudio(videoId) {
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const tempPath = path.join(os.tmpdir(), `studytube-${videoId}-${Date.now()}.webm`);
   const requestOptions = getYoutubeRequestOptions();
-  const ytdlpEnabled = isYtdlpEnabled();
 
   try {
     // Prefer pure Node fallback first so Render can continue even when yt-dlp binary is absent.
     return await downloadYouTubeAudioWithNodeFallback(videoId);
   } catch (nodeError) {
-    if (!ytdlpEnabled) {
-      throw new Error(`Audio download failed. ${nodeError.message || nodeError}`);
-    }
-
     try {
       await ytdlp(sourceUrl, {
         output: tempPath,
