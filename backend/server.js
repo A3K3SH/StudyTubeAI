@@ -376,13 +376,28 @@ function isYtdlpMissingBinaryMessage(message) {
   if (!message) return false;
   const normalizedMessage = String(message).toLowerCase();
   return (
-    normalizedMessage.includes('spawn') &&
-    normalizedMessage.includes('yt-dlp') &&
-    normalizedMessage.includes('enoent')
+    (normalizedMessage.includes('spawn') &&
+      normalizedMessage.includes('yt-dlp') &&
+      normalizedMessage.includes('enoent')) ||
+    normalizedMessage.includes("env: 'python3': no such file or directory") ||
+    (normalizedMessage.includes('yt-dlp') && normalizedMessage.includes('exit code 127'))
   );
 }
 
+function shouldUseYtdlp() {
+  const rawFlag = (process.env.ENABLE_YTDLP || '').trim().toLowerCase();
+  if (rawFlag === 'true') return true;
+  if (rawFlag === 'false') return false;
+
+  // Vercel serverless runtime typically lacks python3 required by yt-dlp.
+  return !process.env.VERCEL;
+}
+
 async function fetchYouTubeTranscriptWithYtdlpSubs(videoId) {
+  if (!shouldUseYtdlp()) {
+    throw new Error('Subtitle extraction fallback unavailable on this deployment.');
+  }
+
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const tempDir = await mkdtemp(path.join(os.tmpdir(), `studytube-subs-${videoId}-`));
 
@@ -464,25 +479,30 @@ async function downloadYouTubeAudio(videoId) {
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const tempPath = path.join(os.tmpdir(), `studytube-${videoId}-${Date.now()}.webm`);
   const requestOptions = getYoutubeRequestOptions();
+  const ytdlpEnabled = shouldUseYtdlp();
 
   try {
-    await ytdlp(sourceUrl, {
-      output: tempPath,
-      format: 'bestaudio[ext=webm]/bestaudio',
-      noPlaylist: true,
-      noWarnings: true,
-      quiet: true,
-      addHeader: Object.entries(requestOptions.headers).map(([key, value]) => `${key}:${value}`),
-    });
-    return tempPath;
-  } catch (error) {
-    await rm(tempPath, { force: true }).catch(() => {});
+    // Prefer pure Node fallback first so Vercel can work without python3/yt-dlp.
+    return await downloadYouTubeAudioWithNodeFallback(videoId);
+  } catch (nodeError) {
+    if (!ytdlpEnabled) {
+      throw new Error(`Audio download failed. ${nodeError.message || nodeError}`);
+    }
 
     try {
-      return await downloadYouTubeAudioWithNodeFallback(videoId);
-    } catch (fallbackError) {
+      await ytdlp(sourceUrl, {
+        output: tempPath,
+        format: 'bestaudio[ext=webm]/bestaudio',
+        noPlaylist: true,
+        noWarnings: true,
+        quiet: true,
+        addHeader: Object.entries(requestOptions.headers).map(([key, value]) => `${key}:${value}`),
+      });
+      return tempPath;
+    } catch (ytdlpError) {
+      await rm(tempPath, { force: true }).catch(() => {});
       throw new Error(
-        `Audio download failed: ${error.message || error}. ${fallbackError.message || fallbackError}`
+        `Audio download failed. ${nodeError.message || nodeError}. ${ytdlpError.message || ytdlpError}`
       );
     }
   }
@@ -532,15 +552,15 @@ async function fetchTranscriptWithFallback(videoId) {
         const fallbackMessage = fallbackError?.message || 'Audio transcription fallback failed';
         const combinedFailureMessage = `${transcriptMessage} ${subtitleMessage} ${fallbackMessage}`;
 
-        if (isYtdlpMissingBinaryMessage(combinedFailureMessage)) {
-          throw new Error(
-            'Server is missing yt-dlp binary on this deployment. Rebuild backend with Clear build cache in Render and redeploy.'
-          );
-        }
-
         if (isYouTubeBotBlockMessage(combinedFailureMessage)) {
           throw new Error(
             'YouTube blocked this server IP with bot verification, so transcript/subtitle/audio extraction failed. Add YOUTUBE_COOKIE in backend env, or try a different video/server.'
+          );
+        }
+
+        if (isYtdlpMissingBinaryMessage(combinedFailureMessage)) {
+          throw new Error(
+            'yt-dlp is unavailable in this runtime (python3 missing). Continuing with transcript/Node fallback only; try another video with captions or set YOUTUBE_COOKIE.'
           );
         }
 
