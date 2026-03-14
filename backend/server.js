@@ -9,7 +9,7 @@ import { YoutubeTranscript } from 'youtube-transcript';
 import ytdl from '@distube/ytdl-core';
 import ytdlp from 'yt-dlp-exec';
 import { createReadStream, createWriteStream } from 'fs';
-import { rm } from 'fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'fs/promises';
 import { pipeline } from 'stream/promises';
 import os from 'os';
 import path from 'path';
@@ -165,6 +165,16 @@ app.post(['/api/payments/razorpay/webhook', '/payments/razorpay/webhook'], expre
 
 app.use(express.json());
 
+// Root endpoint for uptime checks and direct browser access
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'StudyTube Backend',
+    health: '/health',
+    apiHealth: '/api/health',
+  });
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'StudyTube Backend is running' });
@@ -297,6 +307,98 @@ async function fetchYouTubeTranscript(videoId) {
   throw new Error('Could not fetch transcript for this video. Try another video with captions.');
 }
 
+function parseVttContent(vttContent) {
+  return vttContent
+    .replace(/\uFEFF/g, '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line) return false;
+      if (line === 'WEBVTT') return false;
+      if (line.startsWith('NOTE')) return false;
+      if (line.startsWith('Kind:') || line.startsWith('Language:')) return false;
+      if (/^\d+$/.test(line)) return false;
+      if (line.includes('-->')) return false;
+      return true;
+    })
+    .map((line) => line.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseSrtContent(srtContent) {
+  return srtContent
+    .replace(/\uFEFF/g, '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line) return false;
+      if (/^\d+$/.test(line)) return false;
+      if (line.includes('-->')) return false;
+      return true;
+    })
+    .map((line) => line.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function fetchYouTubeTranscriptWithYtdlpSubs(videoId) {
+  const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), `studytube-subs-${videoId}-`));
+
+  try {
+    const requestOptions = getYoutubeRequestOptions();
+    const subtitleTemplate = path.join(tempDir, 'caption.%(ext)s');
+
+    await ytdlp(sourceUrl, {
+      skipDownload: true,
+      writeSubs: true,
+      writeAutoSubs: true,
+      subLangs: 'en.*,en-orig,en',
+      subFormat: 'vtt/srt/best',
+      output: subtitleTemplate,
+      noWarnings: true,
+      quiet: true,
+      addHeader: Object.entries(requestOptions.headers).map(([key, value]) => `${key}:${value}`),
+    });
+
+    const subtitleFiles = (await readdir(tempDir))
+      .filter((fileName) => /\.((en|en-orig)[^.]*)\.(vtt|srt)$/i.test(fileName) || /\.(vtt|srt)$/i.test(fileName))
+      .sort((a, b) => {
+        const rank = (name) => {
+          const lower = name.toLowerCase();
+          if (lower.includes('.en-orig.')) return 0;
+          if (lower.includes('.en.')) return 1;
+          return 2;
+        };
+        return rank(a) - rank(b);
+      });
+
+    for (const subtitleFile of subtitleFiles) {
+      const subtitlePath = path.join(tempDir, subtitleFile);
+      const subtitleContent = await readFile(subtitlePath, 'utf8');
+      const normalizedFileName = subtitleFile.toLowerCase();
+      const transcriptText = normalizedFileName.endsWith('.srt')
+        ? parseSrtContent(subtitleContent)
+        : parseVttContent(subtitleContent);
+
+      if (transcriptText) {
+        return transcriptText;
+      }
+    }
+
+    throw new Error('No subtitle text could be extracted from this video.');
+  } catch (error) {
+    throw new Error(`Subtitle extraction fallback failed: ${error.message || error}`);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function downloadYouTubeAudioWithNodeFallback(videoId) {
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const tempPath = path.join(os.tmpdir(), `studytube-node-${videoId}-${Date.now()}.webm`);
@@ -376,24 +478,33 @@ async function fetchTranscriptWithFallback(videoId) {
   try {
     return await fetchYouTubeTranscript(videoId);
   } catch (transcriptError) {
-    let audioPath = null;
     try {
-      audioPath = await downloadYouTubeAudio(videoId);
-      return await transcribeAudioWithGroq(audioPath);
-    } catch (fallbackError) {
-      const transcriptMessage = transcriptError?.message || 'Transcript fetch failed';
-      const fallbackMessage = fallbackError?.message || 'Audio transcription fallback failed';
+      return await fetchYouTubeTranscriptWithYtdlpSubs(videoId);
+    } catch (subtitleFallbackError) {
+      const subtitleFallbackMessage = subtitleFallbackError?.message || 'Subtitle extraction fallback failed';
 
-      if (fallbackMessage.includes('Sign in to confirm you\'re not a bot')) {
+      let audioPath = null;
+      try {
+        audioPath = await downloadYouTubeAudio(videoId);
+        return await transcribeAudioWithGroq(audioPath);
+      } catch (fallbackError) {
+        const transcriptMessage = transcriptError?.message || 'Transcript fetch failed';
+        const subtitleMessage = subtitleFallbackMessage;
+        const fallbackMessage = fallbackError?.message || 'Audio transcription fallback failed';
+
+        if (fallbackMessage.includes('Sign in to confirm you\'re not a bot')) {
+          throw new Error(
+            `Could not fetch transcript, subtitle fallback, or transcribe audio. ${transcriptMessage}. ${subtitleMessage}. YouTube blocked audio download on this server (bot verification). Add YOUTUBE_COOKIE in backend env, or use a video with captions enabled.`
+          );
+        }
+
         throw new Error(
-          'Could not fetch transcript or transcribe audio. YouTube blocked audio download on this server (bot verification). Add YOUTUBE_COOKIE in backend env, or use a video with captions enabled.'
+          `Could not fetch transcript, subtitle fallback, or transcribe audio. ${transcriptMessage}. ${subtitleMessage}. ${fallbackMessage}`
         );
-      }
-
-      throw new Error(`Could not fetch transcript or transcribe audio. ${transcriptMessage}. ${fallbackMessage}`);
-    } finally {
-      if (audioPath) {
-        await rm(audioPath, { force: true }).catch(() => {});
+      } finally {
+        if (audioPath) {
+          await rm(audioPath, { force: true }).catch(() => {});
+        }
       }
     }
   }
