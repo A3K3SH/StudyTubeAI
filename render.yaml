@@ -16,6 +16,8 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      - key: GROQ_TRANSCRIPTION_MODEL
+        value: whisper-large-v3-turbo
       - key: RAZORPAY_KEY_ID
         sync: false
       - key: RAZORPAY_KEY_SECRET
@@ -29,6 +31,10 @@ services:
       - key: FIREBASE_SERVICE_ACCOUNT
         sync: false
       - key: OWNER_PRO_EMAILS
+        sync: false
+      - key: YOUTUBE_USER_AGENT
+        value: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
+      - key: YOUTUBE_COOKIE
         sync: false
       - key: ALLOWED_ORIGINS
         value: https://studytube-ai-frontend.onrender.com
