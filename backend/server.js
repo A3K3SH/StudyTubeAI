@@ -531,23 +531,23 @@ async function downloadYouTubeAudio(videoId) {
   const requestOptions = getYoutubeRequestOptions();
 
   try {
-    await ytdlp(sourceUrl, {
-      output: tempPath,
-      format: 'bestaudio[ext=webm]/bestaudio',
-      noPlaylist: true,
-      noWarnings: true,
-      quiet: true,
-      addHeader: Object.entries(requestOptions.headers).map(([key, value]) => `${key}:${value}`),
-    });
-    return tempPath;
-  } catch (error) {
-    await rm(tempPath, { force: true }).catch(() => {});
-
+    // Prefer pure Node fallback first so Render can continue even when yt-dlp binary is absent.
+    return await downloadYouTubeAudioWithNodeFallback(videoId);
+  } catch (nodeError) {
     try {
-      return await downloadYouTubeAudioWithNodeFallback(videoId);
-    } catch (fallbackError) {
+      await ytdlp(sourceUrl, {
+        output: tempPath,
+        format: 'bestaudio[ext=webm]/bestaudio',
+        noPlaylist: true,
+        noWarnings: true,
+        quiet: true,
+        addHeader: Object.entries(requestOptions.headers).map(([key, value]) => `${key}:${value}`),
+      });
+      return tempPath;
+    } catch (ytdlpError) {
+      await rm(tempPath, { force: true }).catch(() => {});
       throw new Error(
-        `Audio download failed: ${error.message || error}. ${fallbackError.message || fallbackError}`
+        `Audio download failed. ${nodeError.message || nodeError}. ${ytdlpError.message || ytdlpError}`
       );
     }
   }
