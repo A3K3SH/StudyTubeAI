@@ -1,8 +1,49 @@
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite",
-  "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/health",
+      "dest": "/api/health.js"
+    },
+    {
+      "src": "/api/generate-notes",
+      "dest": "/api/generate-notes.js"
+    },
+    {
+      "src": "/api/support/contact",
+      "dest": "/api/support/contact.js"
+    },
+    {
+      "src": "/api/payments/razorpay/order",
+      "dest": "/api/payments/razorpay/order.js"
+    },
+    {
+      "src": "/api/payments/razorpay/verify",
+      "dest": "/api/payments/razorpay/verify.js"
+    },
+    {
+      "src": "/api/payments/razorpay/webhook",
+      "dest": "/api/payments/razorpay/webhook.js"
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
   ]
 }
