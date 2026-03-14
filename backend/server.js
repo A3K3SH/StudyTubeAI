@@ -240,6 +240,21 @@ function isValidYouTubeVideoId(videoId) {
   return typeof videoId === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(videoId);
 }
 
+function getYoutubeRequestOptions() {
+  const headers = {
+    'User-Agent':
+      process.env.YOUTUBE_USER_AGENT ||
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
+  };
+
+  if (process.env.YOUTUBE_COOKIE) {
+    headers.Cookie = process.env.YOUTUBE_COOKIE;
+  }
+
+  return { headers };
+}
+
 async function fetchYouTubeTranscript(videoId) {
   const transcriptCandidates = [
     () => YoutubeTranscript.fetchTranscript(videoId),
@@ -287,10 +302,13 @@ async function downloadYouTubeAudioWithNodeFallback(videoId) {
   const tempPath = path.join(os.tmpdir(), `studytube-node-${videoId}-${Date.now()}.webm`);
 
   try {
+    const requestOptions = getYoutubeRequestOptions();
+
     const audioStream = ytdl(sourceUrl, {
       quality: 'highestaudio',
       filter: 'audioonly',
       highWaterMark: 1 << 25,
+      requestOptions,
     });
 
     await pipeline(audioStream, createWriteStream(tempPath));
@@ -304,6 +322,7 @@ async function downloadYouTubeAudioWithNodeFallback(videoId) {
 async function downloadYouTubeAudio(videoId) {
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const tempPath = path.join(os.tmpdir(), `studytube-${videoId}-${Date.now()}.webm`);
+  const requestOptions = getYoutubeRequestOptions();
 
   try {
     await ytdlp(sourceUrl, {
@@ -312,6 +331,7 @@ async function downloadYouTubeAudio(videoId) {
       noPlaylist: true,
       noWarnings: true,
       quiet: true,
+      addHeader: Object.entries(requestOptions.headers).map(([key, value]) => `${key}:${value}`),
     });
     return tempPath;
   } catch (error) {
@@ -363,6 +383,13 @@ async function fetchTranscriptWithFallback(videoId) {
     } catch (fallbackError) {
       const transcriptMessage = transcriptError?.message || 'Transcript fetch failed';
       const fallbackMessage = fallbackError?.message || 'Audio transcription fallback failed';
+
+      if (fallbackMessage.includes('Sign in to confirm you\'re not a bot')) {
+        throw new Error(
+          'Could not fetch transcript or transcribe audio. YouTube blocked audio download on this server (bot verification). Add YOUTUBE_COOKIE in backend env, or use a video with captions enabled.'
+        );
+      }
+
       throw new Error(`Could not fetch transcript or transcribe audio. ${transcriptMessage}. ${fallbackMessage}`);
     } finally {
       if (audioPath) {
