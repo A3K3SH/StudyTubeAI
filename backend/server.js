@@ -73,21 +73,43 @@ try {
 }
 
 // Middleware
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
-  : [];
+const normalizeOrigin = (value) => value.replace(/\/$/, '');
 
-app.use(cors({
+const allowedOrigins = new Set(
+  (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .map(normalizeOrigin)
+);
+
+[
+  process.env.VERCEL_URL,
+  process.env.VERCEL_BRANCH_URL,
+  process.env.VERCEL_PROJECT_PRODUCTION_URL,
+].forEach((domain) => {
+  if (domain) {
+    allowedOrigins.add(normalizeOrigin(`https://${domain}`));
+  }
+});
+
+const corsOptions = {
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, server-to-server)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (allowedOrigins.size === 0 || allowedOrigins.has(normalizedOrigin)) {
       return callback(null, true);
     }
-    callback(new Error(`CORS: origin ${origin} not allowed`));
+
+    return callback(new Error(`CORS: origin ${origin} not allowed`));
   },
   credentials: true,
-}));
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.post(['/api/payments/razorpay/webhook', '/payments/razorpay/webhook'], express.raw({ type: 'application/json' }), async (req, res) => {
   try {
