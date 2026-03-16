@@ -7,6 +7,7 @@ import OpenAI from 'openai';
 import Razorpay from 'razorpay';
 import { YoutubeTranscript } from 'youtube-transcript';
 import ytdl from '@distube/ytdl-core';
+import { spawnSync } from 'child_process';
 import { createReadStream, createWriteStream } from 'fs';
 import { mkdtemp, readFile, readdir, rm } from 'fs/promises';
 import { pipeline } from 'stream/promises';
@@ -383,10 +384,27 @@ function isYtdlpMissingBinaryMessage(message) {
   );
 }
 
+function hasPython3Runtime() {
+  const check = spawnSync('python3', ['--version'], { stdio: 'ignore' });
+  return check.status === 0;
+}
+
 function shouldUseYtdlp() {
   const rawFlag = (process.env.ENABLE_YTDLP || '').trim().toLowerCase();
-  if (rawFlag === 'true') return true;
-  if (rawFlag === 'false') return false;
+  const python3Available = hasPython3Runtime();
+
+  if (rawFlag === 'true') {
+    return python3Available;
+  }
+
+  if (rawFlag === 'false') {
+    return false;
+  }
+
+  // Default to disabling yt-dlp if runtime prerequisites are unavailable.
+  if (!python3Available) {
+    return false;
+  }
 
   // Vercel serverless runtime typically lacks python3 required by yt-dlp.
   return !process.env.VERCEL;
