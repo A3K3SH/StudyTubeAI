@@ -391,10 +391,15 @@ function hasPython3Runtime() {
 
 function shouldUseYtdlp() {
   const rawFlag = (process.env.ENABLE_YTDLP || '').trim().toLowerCase();
-  const python3Available = hasPython3Runtime();
+  const isManagedRuntime = Boolean(process.env.RENDER || process.env.VERCEL);
+
+  // Force-disable yt-dlp on managed runtimes to avoid python/runtime binary issues.
+  if (isManagedRuntime) {
+    return false;
+  }
 
   if (rawFlag === 'true') {
-    return python3Available;
+    return hasPython3Runtime();
   }
 
   if (rawFlag === 'false') {
@@ -402,12 +407,7 @@ function shouldUseYtdlp() {
   }
 
   // Default to disabling yt-dlp if runtime prerequisites are unavailable.
-  if (!python3Available) {
-    return false;
-  }
-
-  // Vercel serverless runtime typically lacks python3 required by yt-dlp.
-  return !process.env.VERCEL;
+  return hasPython3Runtime();
 }
 
 let ytdlpClientPromise = null;
@@ -599,7 +599,7 @@ async function fetchTranscriptWithFallback(videoId) {
 
         if (isYtdlpMissingBinaryMessage(combinedFailureMessage)) {
           throw new Error(
-            'yt-dlp is unavailable in this runtime (python3 missing). Continuing with transcript/Node fallback only; try another video with captions or set YOUTUBE_COOKIE.'
+            'Could not extract transcript from this video on current hosting runtime. Please try a video with captions or refresh YOUTUBE_COOKIE.'
           );
         }
 
