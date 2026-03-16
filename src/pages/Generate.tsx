@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { ArrowRight, Loader2, AlertCircle, Youtube, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import NotesPreview, { type StudyNotes } from "@/components/NotesPreview";
@@ -61,6 +62,7 @@ const normalizeStudyNotes = (rawNotes: any): StudyNotes => {
 
 const Generate = () => {
   const [url, setUrl] = useState("");
+  const [manualContent, setManualContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [notes, setNotes] = useState<StudyNotes | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,11 +99,15 @@ const Generate = () => {
   }, []);
 
   const handleGenerate = async () => {
-    if (!url.trim()) {
-      setError("Please enter a YouTube URL.");
+    const normalizedUrl = url.trim();
+    const normalizedManualContent = manualContent.trim();
+
+    if (!normalizedUrl && !normalizedManualContent) {
+      setError("Please enter a YouTube URL or paste transcript text.");
       return;
     }
-    if (!YOUTUBE_REGEX.test(url.trim())) {
+
+    if (normalizedUrl && !YOUTUBE_REGEX.test(normalizedUrl)) {
       setError("Please enter a valid YouTube video URL.");
       return;
     }
@@ -126,7 +132,11 @@ const Generate = () => {
       const response = await fetch(`${backendUrl}/api/generate-notes`, {
         method: 'POST',
         headers: requestHeaders,
-        body: JSON.stringify({ url: url.trim(), userId: userId }),
+        body: JSON.stringify(
+          normalizedManualContent
+            ? { content: normalizedManualContent, userId: userId }
+            : { url: normalizedUrl, userId: userId }
+        ),
       });
 
       // Update remaining notes from response header
@@ -233,6 +243,19 @@ const Generate = () => {
                   </>
                 )}
               </Button>
+            </div>
+            <div className="mt-3 rounded-xl border border-border bg-card/50 p-3">
+              <p className="text-xs text-muted-foreground mb-2">If YouTube blocks transcript extraction, paste transcript or text here as a fallback.</p>
+              <Textarea
+                placeholder="Paste transcript/text (optional fallback)"
+                value={manualContent}
+                onChange={(e) => {
+                  setManualContent(e.target.value);
+                  setError(null);
+                }}
+                className="min-h-28 resize-y text-sm"
+                disabled={loading}
+              />
             </div>
             <AnimatePresence>
               {error && (
