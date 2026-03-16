@@ -21,6 +21,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const BUILD_REF = process.env.RENDER_GIT_COMMIT || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'local';
 
 function parsePositiveInt(value, fallback) {
   const parsedValue = Number.parseInt(value ?? '', 10);
@@ -177,12 +178,12 @@ app.get('/', (req, res) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', message: 'StudyTube Backend is running' });
+  res.json({ status: 'ok', message: 'StudyTube Backend is running', build: BUILD_REF });
 });
 
 // Vercel function routes are prefixed with /api.
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'StudyTube Backend is running' });
+  res.json({ status: 'ok', message: 'StudyTube Backend is running', build: BUILD_REF });
 });
 
 // Support contact endpoint
