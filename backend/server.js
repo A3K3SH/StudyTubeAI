@@ -7,7 +7,6 @@ import OpenAI from 'openai';
 import Razorpay from 'razorpay';
 import { YoutubeTranscript } from 'youtube-transcript';
 import ytdl from '@distube/ytdl-core';
-import ytdlp from 'yt-dlp-exec';
 import { createReadStream, createWriteStream } from 'fs';
 import { mkdtemp, readFile, readdir, rm } from 'fs/promises';
 import { pipeline } from 'stream/promises';
@@ -393,9 +392,26 @@ function shouldUseYtdlp() {
   return !process.env.VERCEL;
 }
 
+let ytdlpClientPromise = null;
+
+async function getYtdlpClient() {
+  if (!ytdlpClientPromise) {
+    ytdlpClientPromise = import('yt-dlp-exec')
+      .then((module) => module.default)
+      .catch(() => null);
+  }
+
+  return ytdlpClientPromise;
+}
+
 async function fetchYouTubeTranscriptWithYtdlpSubs(videoId) {
   if (!shouldUseYtdlp()) {
     throw new Error('Subtitle extraction fallback unavailable on this deployment.');
+  }
+
+  const ytdlp = await getYtdlpClient();
+  if (!ytdlp) {
+    throw new Error('Subtitle extraction fallback unavailable: yt-dlp package is not installed on this server.');
   }
 
   const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
@@ -487,6 +503,11 @@ async function downloadYouTubeAudio(videoId) {
   } catch (nodeError) {
     if (!ytdlpEnabled) {
       throw new Error(`Audio download failed. ${nodeError.message || nodeError}`);
+    }
+
+    const ytdlp = await getYtdlpClient();
+    if (!ytdlp) {
+      throw new Error(`Audio download failed. ${nodeError.message || nodeError}. yt-dlp package is not installed on this server.`);
     }
 
     try {

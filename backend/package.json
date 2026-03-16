@@ -18,7 +18,9 @@
     "openai": "^6.27.0",
     "razorpay": "^2.9.6",
     "youtube-caption-extractor": "^1.9.1",
-    "youtube-transcript": "^1.2.1",
+    "youtube-transcript": "^1.2.1"
+  },
+  "optionalDependencies": {
     "yt-dlp-exec": "^1.0.2"
   },
   "engines": {
