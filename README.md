@@ -2,7 +2,7 @@
 
 **StudyTube AI** is a modern, full-featured SaaS platform that transforms YouTube lectures into comprehensive, structured study notes using AI. Designed for students who want to maximize learning efficiency and save time.
 
-<img width="1920" height="1080" alt="{4F5F1904-EF00-43E4-8B1F-E6A3B84044B3}" src="https://github.com/user-attachments/assets/8f267a57-307b-4e8a-83cd-5d9ccda01558" />
+
 
 
 ## 🚀 SaaS Features
